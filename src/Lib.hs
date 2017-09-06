@@ -3,11 +3,17 @@ module Lib where
 
 import Data.Aeson
 import Network.HTTP.Conduit
+import Network.HTTP.Simple
 import Data.Aeson.Types
 import Data.Maybe
 import Control.Applicative
+import Control.Monad.Loops
+import Control.Monad
 import Data.List
-{-import qualified Data.ByteString.Lazy as B-}
+import Data.List.Split
+import Price
+import System.IO.Unsafe
+import qualified Data.ByteString.Lazy as B
 
 data StashList = StashList {
     nextChangeId :: String,
@@ -57,7 +63,7 @@ data Item = Item {
     {-identified :: Bool,-}
     {-corrupted :: Bool,-}
     {-lockedToCharacter :: Bool,-}
-    note :: Maybe String
+    price :: Maybe Price
     {-properties :: [Property],-}
     {-requirements :: [Requirement],-}
     {-explicitMods :: [String],-}
@@ -91,9 +97,10 @@ instance FromJSON Item where
     parseJSON = withObject "Item" $ \o -> do
         name <- o .: "name" 
         typeline <- o .: "typeLine"
-        let itemName = name ++ " " ++ typeline
+        let itemName = last (splitOn ">" name) ++ " " ++ last (splitOn ">" typeline)
         league <- o .: "league"
         note <- o .:? "note"
+        let price = parsePrice =<< note
         return Item{..}
 
 data Socket = Socket {
@@ -111,32 +118,56 @@ data Property = Property {
 
 type Requirement = Property 
 
-type Price = String
 type League = String
 
 isPrice :: String -> Bool
 isPrice s = "~b/o" `isPrefixOf` s || "~price" `isPrefixOf` s
 
-getPrice :: String -> Maybe Price
-getPrice s = if ("~b/o" :: String) `isPrefixOf` s || ("~price" :: String) `isPrefixOf` s 
-                then Just  s
-                else Nothing
-
 setItemPrice :: Item ->  Maybe Price  -> Item
-setItemPrice i p = i{note =note i <|> p}
+setItemPrice i p = i{price =price i <|> p}
 
-itemsOnSale :: League ->  StashList -> [Item]
-itemsOnSale l stash  = filter (\i -> (league i == l) && isJust ( note i )) $ concatMap (\s -> map (\i -> setItemPrice i $ getPrice $ stashName s ) $ items s) $ filter public $ stashes stash
+itemsOnSale :: StashList -> [Item]
+itemsOnSale stash  = filter (isJust . price ) $ concatMap (\s ->
+    map (\i -> setItemPrice i $ parsePrice $ stashName s ) $ items s) $ filter public $ stashes stash
 
 
 poeNinjaStatsAPIURL :: String
 poeNinjaStatsAPIURL  = "http://api.poe.ninja/api/Data/GetStats"
 
 stashAPIURL :: String
-stashAPIURL = "http://www.pathofexile.com/api/public-stash-tabs"
+stashAPIURL = "http://www.pathofexile.com/api/public-stash-tabs?id="
 
 parseChangeId :: Value -> Parser String
-parseChangeId = withObject "asdf" (.: "nextChangeId")
+parseChangeId = withObject "ChangeId" (.: "nextChangeId")
+
+getLatestChangeId :: IO (Maybe String)
+getLatestChangeId = getChange <$> simpleHttp poeNinjaStatsAPIURL
+    where
+        getChange bs = parseMaybe parseChangeId =<< decode bs
+
+getStashList :: String -> IO (Maybe StashList)
+getStashList [] =do
+    chid <- fromJust <$> getLatestChangeId
+    parseStash <$> simpleHttp (stashAPIURL++chid)
+    where
+        parseStash bs = decode bs :: Maybe StashList
+getStashList chid = parseStash <$> simpleHttp (stashAPIURL++chid)
+    where
+        parseStash bs = decode bs :: Maybe StashList
+
+infiniteStash :: IO [Maybe StashList]
+infiniteStash =   (:) <$> getStashList ""  <*> unsafeInterleaveIO (next infiniteStash) 
+        where
+            next :: IO [Maybe StashList] -> IO [Maybe StashList]
+            next l = do
+                (x:_) <- l
+                (:) <$> getStashList (nextChangeId$ fromJust x) <*> unsafeInterleaveIO (next (fmap tail l))
+
+{-infiniteStash :: [IO (Maybe StashList)]-}
+{-infiniteStash = getStashList "" : next infiniteStash-}
+    {-where-}
+        {-next :: [IO (Maybe StashList)] -> [IO (Maybe StashList)]-}
+        {-next (x:xs) = (fmap (fmap nextChangeId) x >>= getStashList . fromJust) : next xs-}
 
 someFunc :: IO()
 someFunc = undefined

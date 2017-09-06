@@ -21,6 +21,9 @@ library
                      , aeson
                      , syb
                      , bytestring
+                     , split
+                     , text
+                     , monad-loops
   default-language:    Haskell2010
 
 executable poesnipe-exe
