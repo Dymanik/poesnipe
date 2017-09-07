@@ -11,9 +11,12 @@ import Control.Monad.Loops
 import Control.Monad
 import Data.List
 import Data.List.Split
-import Price
+import Data.Char (toLower) 
 import System.IO.Unsafe
 import qualified Data.ByteString.Lazy as B
+import Debug.Trace
+import Price
+import Mods
 
 data StashList = StashList {
     nextChangeId :: String,
@@ -63,10 +66,10 @@ data Item = Item {
     {-identified :: Bool,-}
     {-corrupted :: Bool,-}
     {-lockedToCharacter :: Bool,-}
-    price :: Maybe Price
+    price :: Maybe Price,
     {-properties :: [Property],-}
     {-requirements :: [Requirement],-}
-    {-explicitMods :: [String],-}
+    explicitMods :: Maybe [Mod]
     {-implicitMods :: [String],-}
     {-enchantMods :: [String],-}
     {-craftedMods :: [String],-}
@@ -95,11 +98,12 @@ data Item = Item {
 
 instance FromJSON Item where
     parseJSON = withObject "Item" $ \o -> do
-        name <- o .: "name" 
-        typeline <- o .: "typeLine"
+        name <- map toLower <$> o .: "name" 
+        typeline <- map toLower <$> o .: "typeLine"
         let itemName = last (splitOn ">" name) ++ " " ++ last (splitOn ">" typeline)
         league <- o .: "league"
         note <- o .:? "note"
+        explicitMods <- fmap (map parseMod)  <$> o .:? "explicitMods"
         let price = parsePrice =<< note
         return Item{..}
 
@@ -126,6 +130,10 @@ isPrice s = "~b/o" `isPrefixOf` s || "~price" `isPrefixOf` s
 setItemPrice :: Item ->  Maybe Price  -> Item
 setItemPrice i p = i{price =price i <|> p}
 
+itemFilterMod :: (Mod -> Bool) -> Item -> Maybe Mod
+itemFilterMod f i = find f =<< explicitMods i
+
+
 itemsOnSale :: StashList -> [Item]
 itemsOnSale stash  = filter (isJust . price ) $ concatMap (\s ->
     map (\i -> setItemPrice i $ parsePrice $ stashName s ) $ items s) $ filter public $ stashes stash
@@ -141,7 +149,7 @@ parseChangeId :: Value -> Parser String
 parseChangeId = withObject "ChangeId" (.: "nextChangeId")
 
 getLatestChangeId :: IO (Maybe String)
-getLatestChangeId = getChange <$> simpleHttp poeNinjaStatsAPIURL
+getLatestChangeId = trace "getlatestchange" $ getChange <$> simpleHttp poeNinjaStatsAPIURL
     where
         getChange bs = parseMaybe parseChangeId =<< decode bs
 
@@ -151,7 +159,7 @@ getStashList [] =do
     parseStash <$> simpleHttp (stashAPIURL++chid)
     where
         parseStash bs = decode bs :: Maybe StashList
-getStashList chid = parseStash <$> simpleHttp (stashAPIURL++chid)
+getStashList chid = trace "getStashList" $  parseStash <$> simpleHttp (stashAPIURL++chid)
     where
         parseStash bs = decode bs :: Maybe StashList
 
@@ -160,7 +168,7 @@ infiniteStash =   (:) <$> getStashList ""  <*> unsafeInterleaveIO (next infinite
         where
             next :: IO [Maybe StashList] -> IO [Maybe StashList]
             next l = do
-                (x:_) <- l
+                (x:_) <-  l
                 (:) <$> getStashList (nextChangeId$ fromJust x) <*> unsafeInterleaveIO (next (fmap tail l))
 
 {-infiniteStash :: [IO (Maybe StashList)]-}
